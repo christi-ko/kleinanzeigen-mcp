@@ -6,7 +6,7 @@ import json, math, os, re, subprocess, sys
 from kleinanzeigen_api import KleinanzeigenAPI
 
 MAPS = os.environ.get("KLEINANZEIGEN_MAPS_CLIENT", "")
-AMTZELL = (47.704, 9.828)  # used only when explicitly requested by the caller
+
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
