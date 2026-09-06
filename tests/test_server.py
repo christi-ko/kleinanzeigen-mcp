@@ -24,10 +24,9 @@ class McpE2ETest(unittest.TestCase):
         ])
         names = {x["name"] for x in out[1]["result"]["tools"]}
         self.assertEqual(names, {"search_listings", "get_listing", "check_availability", "calculate_route"})
-        self.assertNotIn("search_bikes", names)
 
-    def test_search_tool_returns_coordinates_and_structured_listings(self):
-        out = self.call([{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search_listings", "arguments": {"query": "Rennrad", "location": "Amtzell", "radius_km": 30, "max_price": 1800, "limit": 3, "compact": True, "include_distance": True, "origin_latitude": 47.704, "origin_longitude": 9.828}}}])
+    def test_search_tool_returns_compact_distance_listings(self):
+        out = self.call([{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search_listings", "arguments": {"query": "product", "location": "Berlin", "radius_km": 30, "max_price": 1800, "limit": 3, "compact": True, "include_distance": True, "origin_latitude": 52.52, "origin_longitude": 13.405}}}])
         result = out[0]["result"]["structuredContent"]
         self.assertIn("listings", result)
         self.assertLessEqual(len(result["listings"]), 3)
