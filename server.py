@@ -1,11 +1,11 @@
-#!/home/christian/.hermes/venvs/kleinanzeigen/bin/python
+#!/usr/bin/env python3
 """Read-only Kleinanzeigen MCP server over stdio.
 No ranking is performed; callers receive neutral listing and route data.
 """
-import json, math, re, subprocess, sys
+import json, math, os, re, subprocess, sys
 from kleinanzeigen_api import KleinanzeigenAPI
 
-MAPS = "/home/christian/.hermes/skills/productivity/maps/scripts/maps_client.py"
+MAPS = os.environ.get("KLEINANZEIGEN_MAPS_CLIENT", "")
 AMTZELL = (47.704, 9.828)  # used only when explicitly requested by the caller
 
 
@@ -85,6 +85,8 @@ def availability(args):
  return {"status":status,"listing":a}
 
 def route(args):
+ if not MAPS:
+  raise RuntimeError("route calculation requires KLEINANZEIGEN_MAPS_CLIENT")
  p=subprocess.run(["python3",MAPS,"distance",args["origin"],"--to",args["destination"],"--mode",args.get("mode","driving")],capture_output=True,text=True,timeout=45)
  if p.returncode: raise RuntimeError(p.stderr.strip() or "routing failed")
  return json.loads(p.stdout)

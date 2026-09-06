@@ -1,7 +1,10 @@
 import importlib.util
 from types import SimpleNamespace
 
-spec = importlib.util.spec_from_file_location("server", "/home/christian/kleinanzeigen-mcp/server.py")
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("server", ROOT / "server.py")
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
 

@@ -1,11 +1,12 @@
 import json
 import os
 import subprocess
+import sys
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SERVER = os.path.join(ROOT, "server.py")
-PYTHON = "/home/christian/.hermes/venvs/kleinanzeigen/bin/python"
+PYTHON = sys.executable
 
 class McpE2ETest(unittest.TestCase):
     def call(self, messages, timeout=60):
