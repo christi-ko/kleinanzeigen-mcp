@@ -30,11 +30,13 @@ The Kleinanzeigen client uses an unofficial/private app endpoint. Use sparingly 
 
 `search_listings` is neutral and supports optional compact output. Set
 `compact=true` to bound descriptions and image URLs. Set
-`include_distance=true` together with `origin_latitude` and `origin_longitude`
-for a fast straight-line distance in kilometres. This server does not rank
-or filter by product type.
+`include_distance=true` together with the caller's `origin_latitude` and
+`origin_longitude` for a fast straight-line distance in kilometres. The home
+location is caller-specific and is never stored in this server. This server
+does not rank or filter by product type.
 
 `calculate_route` can delegate driving-distance and duration calculation to an
-external maps client. Configure its executable with
+external maps client. Pass the caller's origin as a place/address string and
+the listing location as `destination`. Configure its executable with
 `KLEINANZEIGEN_MAPS_CLIENT=/path/to/maps_client.py`; without it the tool
 returns a clear configuration error. The server itself performs no ranking.
