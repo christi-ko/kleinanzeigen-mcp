@@ -3,7 +3,125 @@
 No ranking is performed; callers receive neutral listing and route data.
 """
 import json, math, os, re, subprocess, sys
+from html import unescape
+from html.parser import HTMLParser
+from urllib.parse import urlencode, urljoin
+from urllib.request import Request, urlopen
 from kleinanzeigen_api import KleinanzeigenAPI
+
+WEB_SEARCH_ENDPOINT = "https://www.kleinanzeigen.de/s-suchanfrage.html"
+WEB_USER_AGENT = "Mozilla/5.0 (compatible; KleinanzeigenMCP/0.2)"
+
+
+def web_search_params(*, category=None, location=None, radius_km=None, min_price=None,
+                      max_price=None, query="", attributes=None, page=None):
+ """Build native Kleinanzeigen web-search parameters without category logic."""
+ params = {}
+ if category is not None:
+  params["categoryId"] = str(category)
+ if location:
+  params["locationStr"] = location
+ if radius_km is not None:
+  params["radius"] = str(radius_km)
+ if min_price is not None:
+  params["minPrice"] = str(min_price)
+ if max_price is not None:
+  params["maxPrice"] = str(max_price)
+ if query:
+  params["keywords"] = query
+ if page is not None:
+  params["page"] = str(page)
+ for field, value in (attributes or {}).items():
+  if not isinstance(field, str) or not field.strip():
+   raise ValueError("attribute names must be non-empty strings")
+  values = value if isinstance(value, (list, tuple)) else [value]
+  if not values:
+   raise ValueError("attribute values must not be empty")
+  for item in values:
+   if item is None or isinstance(item, (dict, list, tuple)):
+    raise ValueError("attribute values must be scalar values")
+  key = f"attributeMap[{field}]"
+  params[key] = [str(item) for item in values] if len(values) > 1 else str(values[0])
+ return params
+
+
+class _WebListingParser(HTMLParser):
+ def __init__(self):
+  super().__init__()
+  self.rows = []
+  self._article = None
+  self._jsonld = []
+  self._script = False
+
+ def handle_starttag(self, tag, attrs):
+  attrs = dict(attrs)
+  if tag == "article" and attrs.get("data-adid") and attrs.get("data-href"):
+   self._article = {"id": attrs["data-adid"], "href": attrs["data-href"], "text": []}
+  if self._article and tag == "script" and attrs.get("type") == "application/ld+json":
+   self._script = True
+   self._jsonld = []
+
+ def handle_data(self, data):
+  if self._article:
+   self._article["text"].append(" ".join(data.split()))
+  if self._script:
+   self._jsonld.append(data)
+
+ def handle_endtag(self, tag):
+  if self._article and tag == "script" and self._script:
+   self._script = False
+   try:
+    data = json.loads("".join(self._jsonld))
+    if isinstance(data, dict):
+     self._article["jsonld"] = data
+   except (TypeError, ValueError):
+    pass
+  if tag == "article" and self._article:
+   self.rows.append(self._article)
+   self._article = None
+
+
+def parse_web_listings(html, base_url=WEB_SEARCH_ENDPOINT):
+ parser = _WebListingParser()
+ parser.feed(html)
+ rows = []
+ seen = set()
+ for raw in parser.rows:
+  listing_id = str(raw["id"])
+  if listing_id in seen:
+   continue
+  seen.add(listing_id)
+  data = raw.get("jsonld", {})
+  title = data.get("title") or " ".join(raw["text"]).strip()
+  if not data.get("title"):
+   title = re.sub(r"\s+\d[\d.]*\s*€\s*$", "", title).strip()
+  description = data.get("description")
+  offers = data.get("offers") or {}
+  price = offers.get("price") if isinstance(offers, dict) else None
+  rows.append({"id": listing_id, "title": unescape(title), "price": price,
+               "url": urljoin(base_url, raw["href"]), "city": None,
+               "zip_code": None, "latitude": None, "longitude": None,
+               "posted": None, "attributes": {},
+               "description": description, "images": []})
+ return rows
+
+
+def fetch_web_search(params, *, timeout=45):
+ url = WEB_SEARCH_ENDPOINT + "?" + urlencode(params, doseq=True)
+ request = Request(url, headers={"User-Agent": WEB_USER_AGENT})
+ try:
+  with urlopen(request, timeout=timeout) as response:
+   html = response.read().decode("utf-8", "replace")
+   final_url = response.geturl()
+ except Exception as exc:
+  raise RuntimeError(f"Kleinanzeigen web search request failed: {exc}") from exc
+ lower = html.lower()
+ if any(marker in lower for marker in ("captcha", "access denied", "robot check")):
+  raise RuntimeError("Kleinanzeigen web search returned a bot or captcha page")
+ rows = parse_web_listings(html, final_url)
+ if not rows and "srchrslt-adtable" not in html:
+  raise RuntimeError("Kleinanzeigen web search returned unexpected HTML")
+ return {"query": params.get("keywords", ""), "count": len(rows), "listings": rows}
 
 MAPS = os.environ.get("KLEINANZEIGEN_MAPS_CLIENT", "")
 
@@ -40,7 +158,7 @@ def listing_dict(a):
  return {"id":a.id,"title":a.title,"price":a.price,"url":a.url,"city":a.city,"zip_code":a.zip_code,"latitude":a.latitude,"longitude":a.longitude,"posted":str(a.posted) if a.posted else None,"attributes":a.attributes,"description":getattr(a,"description",None),"images":getattr(a,"images",None)}
 api = KleinanzeigenAPI()
 TOOLS = [
- {"name":"search_listings","description":"Search public Kleinanzeigen listings; neutral data, optional compact fields and distances. No ranking.","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"category":{"type":"string"},"location":{"type":"string"},"radius_km":{"type":"number"},"min_price":{"type":"number"},"max_price":{"type":"number"},"sort":{"type":"string"},"pages":{"type":"integer"},"limit":{"type":"integer"},"exclude":{"type":"array","items":{"type":"string"}},"compact":{"type":"boolean"},"max_description_chars":{"type":"integer"},"max_images":{"type":"integer"},"include_distance":{"type":"boolean"},"origin_latitude":{"type":"number"},"origin_longitude":{"type":"number"}},"required":["query"]}},
+ {"name":"search_listings","description":"Search public Kleinanzeigen listings; neutral data, optional native category attributes, compact fields and distances. No ranking.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Optional free-text search; leave empty for category/attribute-only discovery."},"category":{"type":"string"},"attributes":{"type":"object","description":"Optional category-specific native filters. Keys are passed as attributeMap[KEY]; values may be strings or arrays of strings.","additionalProperties":{"oneOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"array","items":{"type":"string"}}]}},"location":{"type":"string"},"radius_km":{"type":"number"},"min_price":{"type":"number"},"max_price":{"type":"number"},"sort":{"type":"string"},"pages":{"type":"integer"},"limit":{"type":"integer"},"exclude":{"type":"array","items":{"type":"string"}},"compact":{"type":"boolean"},"max_description_chars":{"type":"integer"},"max_images":{"type":"integer"},"include_distance":{"type":"boolean"},"origin_latitude":{"type":"number"},"origin_longitude":{"type":"number"}},"required":[]}},
  {"name":"get_listing","description":"Fetch one public listing by URL or Kleinanzeigen ID.","inputSchema":{"type":"object","properties":{"url":{"type":"string"},"id":{"type":"string"}}}},
  {"name":"check_availability","description":"Check a public listing and report available, reserved, deleted, or unclear.","inputSchema":{"type":"object","properties":{"url":{"type":"string"},"id":{"type":"string"}}}},
  {"name":"calculate_route","description":"Calculate driving route from an origin to a listing location or destination.","inputSchema":{"type":"object","properties":{"origin":{"type":"string"},"destination":{"type":"string"},"mode":{"type":"string","enum":["driving","cycling","walking"]}},"required":["origin","destination"]}}
@@ -50,10 +168,22 @@ def listing_dict(a):
  return {"id":a.id,"title":a.title,"price":a.price,"url":a.url,"city":a.city,"zip_code":a.zip_code,"latitude":a.latitude,"longitude":a.longitude,"posted":str(a.posted) if a.posted else None,"attributes":a.attributes,"description":getattr(a,"description",None),"images":getattr(a,"images",None)}
 
 def search(args):
- q=args["query"]; limit=max(1,min(int(args.get("limit",50)),100)); pages=max(1,min(int(args.get("pages",1)),5)); kwargs={"q":q,"category":args.get("category"),"distance_km":args.get("radius_km"),"min_price":args.get("min_price"),"max_price":args.get("max_price"),"pages":pages,"size":limit}
+ q=args.get("query", "")
+ limit=max(1,min(int(args.get("limit",50)),100)); pages=max(1,min(int(args.get("pages",1)),5))
  compact=bool(args.get("compact",False)); include_distance=bool(args.get("include_distance",False)); origin=None
  if include_distance and args.get("origin_latitude") is not None and args.get("origin_longitude") is not None:
   origin={"latitude":args["origin_latitude"],"longitude":args["origin_longitude"]}
+ attributes=args.get("attributes")
+ if attributes:
+  params=web_search_params(category=args.get("category"), location=args.get("location"), radius_km=args.get("radius_km"), min_price=args.get("min_price"), max_price=args.get("max_price"), query=q, attributes=attributes)
+  result=fetch_web_search(params)
+  rows=result["listings"][:limit]
+  if compact:
+   rows=[dict(row, description=(row.get("description") or "")[:max(0,int(args.get("max_description_chars",1200)))], images=(row.get("images") or [])[:max(0,int(args.get("max_images",5)))]) for row in rows]
+  result["listings"]=rows
+  result["count"]=len(rows)
+  return result
+ kwargs={"q":q,"category":args.get("category"),"distance_km":args.get("radius_km"),"min_price":args.get("min_price"),"max_price":args.get("max_price"),"pages":pages,"size":limit}
  if args.get("location"): kwargs["location"]=args["location"]
  if args.get("sort"): kwargs["sort_type"]={"new":"DATE_DESCENDING","price_asc":"PRICE_ASCENDING","price_desc":"PRICE_DESCENDING"}.get(args["sort"],args["sort"])
  ads={}
